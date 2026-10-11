@@ -1,4 +1,9 @@
+
 extends Node
+
+# ============================================================
+# SIGNALS
+# ============================================================
 
 signal status_changed
 signal presentation_changed
@@ -15,7 +20,7 @@ signal ad_failed(ad_type: String, message: String)
 
 
 # ============================================================
-# TEST AD UNITS
+# GOOGLE TEST AD UNITS
 # ============================================================
 
 const TEST_INTERSTITIAL: String = \
@@ -29,7 +34,7 @@ const TEST_REWARDED: String = \
 # PUBLIC STATE
 # ============================================================
 
-var status_text: String = "Not started"
+var status_text: String = "Waiting for remote configuration"
 var last_error: String = ""
 
 var presenting: bool = false
@@ -43,7 +48,6 @@ var rewarded_ready: bool = false
 # ============================================================
 
 var _available: bool = false
-
 var _initialized: bool = false
 var _initializing: bool = false
 
@@ -60,21 +64,110 @@ var _interstitial_loaded_at: int = 0
 var _rewarded_loaded_at: int = 0
 
 var _last_interstitial_at: int = -1
-
 var _game_over_count: int = 0
 
-var _consent_retry_pending: bool = false
 var _consent_updating: bool = false
+var _consent_retry_pending: bool = false
+
+var _interstitial_retry_pending: bool = false
+var _rewarded_retry_pending: bool = false
 
 var _generation: int = 0
-
-var _input_shield: Control
 
 var _active_ad: String = ""
 var _reward_granted: bool = false
 
-var _interstitial_retry_pending: bool = false
-var _rewarded_retry_pending: bool = false
+var _input_shield: Control
+
+
+# ============================================================
+# REMOTE CONFIGURATION GETTERS
+# ============================================================
+
+func _ad_enabled() -> bool:
+	return bool(RemoteConfig.get_ad_setting(
+		"enabled",
+		AdMobConfig.ENABLED
+	))
+
+
+func _interstitial_enabled() -> bool:
+	return _ad_enabled() and bool(
+		RemoteConfig.get_ad_setting(
+			"enable_interstitial",
+			AdMobConfig.ENABLE_INTERSTITIAL
+		)
+	)
+
+
+func _rewarded_enabled() -> bool:
+	return _ad_enabled() and bool(
+		RemoteConfig.get_ad_setting(
+			"enable_rewarded",
+			AdMobConfig.ENABLE_REWARDED
+		)
+	)
+
+
+func _use_test_ads() -> bool:
+	return bool(RemoteConfig.get_ad_setting(
+		"use_test_ads",
+		AdMobConfig.USE_TEST_ADS
+	))
+
+
+func _game_overs_per_ad() -> int:
+	return maxi(
+		1,
+		int(RemoteConfig.get_ad_setting(
+			"game_overs_per_ad",
+			AdMobConfig.GAME_OVERS_PER_AD
+		))
+	)
+
+
+func _minimum_seconds_between_ads() -> float:
+	return maxf(
+		0.0,
+		float(RemoteConfig.get_ad_setting(
+			"minimum_seconds_between_ads",
+			AdMobConfig.MINIMUM_SECONDS_BETWEEN_ADS
+		))
+	)
+
+
+func _retry_delay_seconds() -> float:
+	return maxf(
+		1.0,
+		float(RemoteConfig.get_ad_setting(
+			"retry_delay_seconds",
+			AdMobConfig.RETRY_DELAY_SECONDS
+		))
+	)
+
+
+func _ad_expiration_seconds() -> float:
+	return maxf(
+		60.0,
+		float(RemoteConfig.get_ad_setting(
+			"ad_expiration_seconds",
+			AdMobConfig.AD_EXPIRATION_SECONDS
+		))
+	)
+
+
+func _ios_interstitial_id() -> String:
+	return str(RemoteConfig.get_ad_setting(
+		"ios_interstitial_id",
+		AdMobConfig.IOS_INTERSTITIAL_ID
+	)).strip_edges()
+
+
+func _ios_rewarded_id() -> String:
+	return str(RemoteConfig.get_ad_setting(
+		"ios_rewarded_id",
+		AdMobConfig.IOS_REWARDED_ID
+	)).strip_edges()
 
 
 # ============================================================
@@ -84,19 +177,39 @@ var _rewarded_retry_pending: bool = false
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
 
+	_create_input_shield()
+
+	RemoteConfig.config_loaded.connect(
+		_on_remote_config_loaded
+	)
+
+	if RemoteConfig.is_loaded:
+		_on_remote_config_loaded()
+	else:
+		_set_status("Waiting for remote configuration")
+
+
+# ============================================================
+# REMOTE CONFIG LOADED
+# ============================================================
+
+func _on_remote_config_loaded() -> void:
+	if not _ad_enabled():
+		_available = false
+		_set_status("AdMob disabled by remote configuration")
+		return
+
 	_available = (
-		AdMobConfig.ENABLED
-		and OS.get_name() == "iOS"
+		OS.get_name() == "iOS"
 		and Engine.has_singleton("PoingGodotAdMob")
 	)
 
 	if not _available:
-		_set_status(
-			"AdMob disabled, unsupported platform, or plugin missing"
-		)
+		_set_status("AdMob unavailable on this platform")
 		return
 
-	_create_input_shield()
+	_set_status("Remote configuration loaded")
+
 	_refresh_consent()
 
 
@@ -106,17 +219,13 @@ func _ready() -> void:
 
 func _set_status(message: String) -> void:
 	status_text = message
-
 	print("[AdMob] ", message)
-
 	status_changed.emit()
 
 
 func _set_error(ad_type: String, message: String) -> void:
 	last_error = message
-
 	_set_status(message)
-
 	ad_failed.emit(ad_type, message)
 
 
@@ -127,11 +236,9 @@ func _set_error(ad_type: String, message: String) -> void:
 func _create_input_shield() -> void:
 	var layer := CanvasLayer.new()
 	layer.layer = 100
-
 	add_child(layer)
 
 	_input_shield = Control.new()
-
 	layer.add_child(_input_shield)
 
 	_input_shield.set_anchors_and_offsets_preset(
@@ -156,11 +263,13 @@ func _set_presenting(value: bool) -> void:
 # ============================================================
 
 func _refresh_consent() -> void:
-	if not _available or _consent_updating or presenting:
+	if not _available:
+		return
+
+	if _consent_updating or presenting:
 		return
 
 	_consent_updating = true
-
 	_set_status("Checking consent")
 
 	UserMessagingPlatform.consent_information.update(
@@ -172,6 +281,12 @@ func _refresh_consent() -> void:
 
 func _can_request_ads() -> bool:
 	if not _available:
+		return false
+
+	if not RemoteConfig.is_loaded:
+		return false
+
+	if not _ad_enabled():
 		return false
 
 	var status := \
@@ -204,7 +319,6 @@ func _consent_updated() -> void:
 
 func _consent_loaded(form: ConsentForm) -> void:
 	_set_presenting(true)
-
 	form.show(_consent_dismissed)
 
 
@@ -234,7 +348,6 @@ func _consent_failed(error: FormError) -> void:
 			]
 		)
 
-	# Existing consent may still be valid.
 	if _can_request_ads():
 		_initialize_sdk()
 
@@ -311,10 +424,7 @@ func _privacy_options_closed(error: FormError) -> void:
 # ============================================================
 
 func _initialize_sdk() -> void:
-	if not _available:
-		return
-
-	if not _can_request_ads():
+	if not _available or not _can_request_ads():
 		return
 
 	if _initialized:
@@ -325,11 +435,9 @@ func _initialize_sdk() -> void:
 		return
 
 	_initializing = true
-
 	_set_status("Initializing AdMob SDK")
 
 	var listener := OnInitializationCompleteListener.new()
-
 	listener.on_initialization_complete = _on_initialized
 
 	MobileAds.initialize(listener)
@@ -342,7 +450,6 @@ func _on_initialized(
 	_initialized = true
 
 	_set_status("AdMob initialized")
-
 	_load_ads()
 
 
@@ -351,16 +458,16 @@ func _on_initialized(
 # ============================================================
 
 func _ad_unit(ad_type: String) -> String:
-	if AdMobConfig.USE_TEST_ADS:
+	if _use_test_ads():
 		if ad_type == "rewarded":
 			return TEST_REWARDED
 
 		return TEST_INTERSTITIAL
 
 	if ad_type == "rewarded":
-		return AdMobConfig.IOS_REWARDED_ID.strip_edges()
+		return _ios_rewarded_id()
 
-	return AdMobConfig.IOS_INTERSTITIAL_ID.strip_edges()
+	return _ios_interstitial_id()
 
 
 # ============================================================
@@ -368,16 +475,13 @@ func _ad_unit(ad_type: String) -> String:
 # ============================================================
 
 func _load_ads() -> void:
-	if not _initialized:
+	if not _initialized or not _can_request_ads():
 		return
 
-	if not _can_request_ads():
-		return
-
-	if AdMobConfig.ENABLE_INTERSTITIAL:
+	if _interstitial_enabled():
 		_load_interstitial()
 
-	if AdMobConfig.ENABLE_REWARDED:
+	if _rewarded_enabled():
 		_load_rewarded()
 
 
@@ -386,7 +490,7 @@ func _load_ads() -> void:
 # ============================================================
 
 func _load_interstitial() -> void:
-	if not AdMobConfig.ENABLE_INTERSTITIAL:
+	if not _interstitial_enabled():
 		return
 
 	if not _initialized or not _can_request_ads():
@@ -420,7 +524,10 @@ func _load_interstitial() -> void:
 
 		if generation != _generation or not _can_request_ads():
 			ad.destroy()
-			_load_interstitial()
+			return
+
+		if not _interstitial_enabled():
+			ad.destroy()
 			return
 
 		_interstitial = ad
@@ -461,16 +568,10 @@ func _load_interstitial() -> void:
 # ============================================================
 
 func can_show_interstitial() -> bool:
-	if not _available:
+	if not _interstitial_enabled():
 		return false
 
-	if not AdMobConfig.ENABLE_INTERSTITIAL:
-		return false
-
-	if presenting:
-		return false
-
-	if _interstitial == null:
+	if presenting or _interstitial == null:
 		return false
 
 	if not _can_request_ads():
@@ -481,7 +582,7 @@ func can_show_interstitial() -> bool:
 			Time.get_ticks_msec() - _last_interstitial_at
 		) / 1000.0
 
-		if elapsed < AdMobConfig.MINIMUM_SECONDS_BETWEEN_ADS:
+		if elapsed < _minimum_seconds_between_ads():
 			return false
 
 	return true
@@ -496,14 +597,12 @@ func show_interstitial() -> bool:
 		return false
 
 	_active_ad = "interstitial"
-
 	_set_presenting(true)
 
 	var callback := FullScreenContentCallback.new()
 
 	callback.on_ad_showed_full_screen_content = func():
 		_last_interstitial_at = Time.get_ticks_msec()
-
 		_game_over_count = 0
 
 		_set_status("Interstitial shown")
@@ -525,7 +624,6 @@ func show_interstitial() -> bool:
 	_interstitial.full_screen_content_callback = callback
 
 	interstitial_ready = false
-
 	_interstitial.show()
 
 	return true
@@ -536,25 +634,23 @@ func show_interstitial() -> bool:
 # ============================================================
 
 func game_over() -> void:
-	if not AdMobConfig.ENABLE_INTERSTITIAL:
+	if not _interstitial_enabled():
 		return
+
+	var frequency := _game_overs_per_ad()
 
 	_game_over_count = mini(
 		_game_over_count + 1,
-		maxi(1, AdMobConfig.GAME_OVERS_PER_AD)
+		frequency
 	)
 
-	if _game_over_count < AdMobConfig.GAME_OVERS_PER_AD:
+	if _game_over_count < frequency:
 		return
 
 	if show_interstitial():
 		return
 
-	# Keep the counter at the threshold.
-	_game_over_count = maxi(
-		1,
-		AdMobConfig.GAME_OVERS_PER_AD
-	)
+	_game_over_count = frequency
 
 
 # ============================================================
@@ -568,7 +664,6 @@ func _finish_interstitial() -> void:
 	_destroy_interstitial()
 
 	_active_ad = ""
-
 	_set_presenting(false)
 
 	interstitial_closed.emit()
@@ -589,7 +684,7 @@ func _destroy_interstitial() -> void:
 # ============================================================
 
 func _load_rewarded() -> void:
-	if not AdMobConfig.ENABLE_REWARDED:
+	if not _rewarded_enabled():
 		return
 
 	if not _initialized or not _can_request_ads():
@@ -623,7 +718,10 @@ func _load_rewarded() -> void:
 
 		if generation != _generation or not _can_request_ads():
 			ad.destroy()
-			_load_rewarded()
+			return
+
+		if not _rewarded_enabled():
+			ad.destroy()
 			return
 
 		_rewarded = ad
@@ -665,8 +763,7 @@ func _load_rewarded() -> void:
 
 func can_show_rewarded() -> bool:
 	return (
-		_available
-		and AdMobConfig.ENABLE_REWARDED
+		_rewarded_enabled()
 		and not presenting
 		and _rewarded != null
 		and _can_request_ads()
@@ -714,13 +811,11 @@ func show_rewarded() -> bool:
 			return
 
 		_reward_granted = true
-
 		reward_earned.emit()
 
 	rewarded_ready = false
 
 	_set_status("Showing rewarded ad")
-
 	_rewarded.show(listener)
 
 	return true
@@ -744,11 +839,9 @@ func _finalize_rewarded() -> void:
 	_destroy_rewarded()
 
 	_active_ad = ""
-
 	_set_presenting(false)
 
 	rewarded_closed.emit()
-
 	_load_ads()
 
 
@@ -781,7 +874,7 @@ func _schedule_retry(ad_type: String) -> void:
 		return
 
 	await get_tree().create_timer(
-		AdMobConfig.RETRY_DELAY_SECONDS
+		_retry_delay_seconds()
 	).timeout
 
 	if ad_type == "interstitial":
@@ -812,10 +905,13 @@ func _process(_delta: float) -> void:
 	if not _initialized or presenting:
 		return
 
+	if not _can_request_ads():
+		return
+
 	var now := Time.get_ticks_msec()
 
 	var expiry := int(
-		AdMobConfig.AD_EXPIRATION_SECONDS * 1000.0
+		_ad_expiration_seconds() * 1000.0
 	)
 
 	if _interstitial != null:
@@ -836,12 +932,16 @@ func _process(_delta: float) -> void:
 func diagnostics() -> String:
 	return (
 		"AdMob diagnostics\n"
-		+ "Test ads: %s\n" % AdMobConfig.USE_TEST_ADS
+		+ "Remote config loaded: %s\n" % RemoteConfig.is_loaded
+		+ "Ads enabled: %s\n" % _ad_enabled()
+		+ "Test ads: %s\n" % _use_test_ads()
+		+ "Interstitial enabled: %s\n" % _interstitial_enabled()
+		+ "Rewarded enabled: %s\n" % _rewarded_enabled()
 		+ "Interstitial ready: %s\n" % interstitial_ready
 		+ "Rewarded ready: %s\n" % rewarded_ready
 		+ "Game overs: %d / %d\n" % [
 			_game_over_count,
-			AdMobConfig.GAME_OVERS_PER_AD
+			_game_overs_per_ad()
 		]
 		+ "Status: %s\n" % status_text
 		+ "Last error: %s" % (

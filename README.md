@@ -1,94 +1,184 @@
-# Godot AdMob Manager
+# Godot Remote Configuration, AdMob & Game Center
 
-Reusable AdMob integration for Godot 4.x mobile games using the Poing Studios Godot AdMob Plugin.
+Reusable configuration and monetization setup for **Godot 4.6.x**, **iOS**, and **Poing Studios Godot AdMob Plugin 5.1.0**. The app downloads per-game settings from GitHub Pages **before entering the game**. AdMob starts only after the remote configuration loads successfully.
 
-Supports:
+## Features
 
-- Interstitial ads
-- Rewarded ads
-- Automatic game-over ad frequency
-- Google UMP consent management
-- Privacy options
-- Automatic ad loading and retries
-- Ad expiration
-- Test and production ad units
-- Diagnostic messages and signals
-
-The manager is independent of game-specific systems such as player controllers, save files, and leaderboards.
+- Startup screen built entirely from code, with configurable title, destination scene, colors, and remote JSON URL in the Inspector.
+- Internet-required startup: failed network request displays **No internet connection** and a **Retry** button; HTTP/server/JSON errors display their own messages.
+- Remotely configurable AdMob enablement, interstitials, rewarded ads, ad frequency, minimum interval, retry delay, expiration, test mode, and iOS ad unit IDs.
+- Google UMP consent, privacy options, automatic loading, ad expiration, and diagnostics.
+- Remote Game Center enablement and leaderboard ID, consumed by your separate Game Center manager.
+- No `.tres` configuration resource required.
 
 ## 1. Requirements
 
-| Requirement | Details |
-|---|---|
-| Godot | 4.6.x |
-| AdMob Plugin | Poing Studios Godot AdMob Plugin 5.1.0 |
-| Platform | iOS |
-| AdMob Account | Required for production ads |
-| Apple Developer Account | Required for TestFlight/App Store distribution |
+- Godot 4.6.x and iOS export support.
+- [Poing Studios Godot AdMob Plugin](https://github.com/poing-studios/godot-admob-plugin) 5.1.0 and its native iOS dependencies.
+- An AdMob App ID configured in the native iOS build and ad unit IDs for production ads.
+- Game Center plugin and entitlement configured in the native iOS build **if** using leaderboards.
+- A publicly accessible HTTPS JSON file, such as one hosted by GitHub Pages.
 
-### Required plugin
-
-**Poing Studios Godot AdMob Plugin**
-
-https://github.com/poing-studios/godot-admob-plugin
-
-Install the plugin and its native iOS dependencies following the repository's installation instructions.
-
-The manager uses classes provided by this plugin, including `MobileAds`, `InterstitialAd`, `RewardedAd`, and `UserMessagingPlatform`.
-
-The native iOS plugin must be included in the exported application.
-
-## 2. Project Structure
+## 2. Project structure
 
 ```text
 res://
-├── addons/
-│   └── ... AdMob plugin files
-├── scripts/
-│   └── ads/
-│       ├── admob_config.gd
-│       └── admob_manager.gd
-└── project.godot
+├── ads/
+│   ├── admob_config.gd
+│   ├── admob_manager.gd
+│   ├── remote_config.gd
+│   ├── startup_screen.gd
+│   └── startup_screen.tscn
+├── game_center/
+│   └── game_center_manager.gd  # Your existing manager; integration required
+└── scenes/
+    └── main.tscn
 ```
 
-Only two custom scripts are required.
+The startup `.tscn` contains only the root node; `startup_screen.gd` creates the UI programmatically.
 
-**No `ads.tres` file is needed.**
+### `res://ads/startup_screen.tscn`
 
-## 3. Installation
+```ini
+[gd_scene load_steps=2 format=3]
 
-### Step 1 — Install the AdMob plugin
+[ext_resource type="Script" path="res://ads/startup_screen.gd" id="1_script"]
 
-Install the Poing Studios plugin and configure the native iOS export dependencies.
+[node name="StartupScreen" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_script")
+```
 
-Verify the plugin is enabled in the iOS export preset.
+## 3. Autoload and main scene
 
-### Step 2 — Add the scripts
+In **Project → Project Settings → Globals → Autoload**, add in this order:
 
-Copy the following files into `res://scripts/ads/`:
+| Order | Path | Name |
+|---|---|---|
+| 1 | `res://ads/remote_config.gd` | `RemoteConfig` |
+| 2 | `res://ads/admob_manager.gd` | `AdMobManager` |
 
-- `admob_config.gd`
-- `admob_manager.gd`
+Configure your Game Center manager separately if it is also an Autoload. It must wait until `RemoteConfig.is_loaded` before using remote leaderboard settings.
 
-### Step 3 — Configure the Autoload
+Set **Project → Project Settings → Application → Run → Main Scene** to `res://ads/startup_screen.tscn`.
 
-Open:
+> Autoload order alone does **not** mean the HTTP download has finished. `AdMobManager` must wait for `RemoteConfig.config_loaded` before requesting consent or initializing/loading ads.
 
-**Project → Project Settings → Globals → Autoload**
+## 4. Configure the startup scene in the Inspector
 
-Add:
+Open `res://ads/startup_screen.tscn`, select `StartupScreen`, and set the exported properties:
+
+| Property | Example | Purpose |
+|---|---|---|
+| Game Title | `Spin Frenzy` | Displayed while loading |
+| Next Scene | `res://scenes/main.tscn` | Opened after valid JSON loads |
+| Remote Config URL | `https://bozapps.com/config/spin-frenzy.json` | HTTPS endpoint to download |
+| Background Color | `#100b2a` | Startup background |
+| Text Color | `#ffffff` | Labels |
+| Accent Color | `#ffb379` | Retry button |
+
+`RemoteConfig` does not fetch automatically in `_ready()`; `StartupScreen` calls `RemoteConfig.load_config(remote_config_url)`.
+
+### Startup sequence
 
 ```text
-Path: res://scripts/ads/admob_manager.gd
-Name: AdMobManager
-Enabled: Yes
+App launch
+  → StartupScreen
+  → RemoteConfig.load_config(URL)
+     ├─ Valid HTTP 200 + JSON with "ads" object
+     │    → config_loaded
+     │    → AdMobManager starts consent / SDK initialization
+     │    → StartupScreen opens Next Scene
+     └─ Failure
+          → config_failed(message)
+          → StartupScreen shows error and Retry
+          → Game scene remains blocked until retry succeeds
 ```
 
-The manager will initialize automatically when the application starts.
+A failed network request shows **No internet connection**, but that is a user-facing message rather than proof the device is offline: DNS, TLS, hosting, and timeout errors can also cause a failure. Non-200 HTTP responses show **Configuration server unavailable**; malformed JSON shows **Invalid game configuration**.
 
-### Step 4 — Configure AdMob
+**This is intentionally online-only startup.** If GitHub Pages is unavailable, the game cannot start even when the device has internet access. No offline cache is used in the current implementation.
 
-Open `admob_config.gd`.
+## 5. Host configuration on GitHub Pages
+
+Create a public file such as `config/spin-frenzy.json` in your GitHub Pages repository. It will be accessible at a URL such as:
+
+`https://bozapps.com/config/spin-frenzy.json`
+
+Example full configuration:
+
+```json
+{
+  "version": 1,
+  "ads": {
+    "enabled": true,
+    "enable_interstitial": true,
+    "enable_rewarded": false,
+    "game_overs_per_ad": 3,
+    "minimum_seconds_between_ads": 90,
+    "retry_delay_seconds": 60,
+    "ad_expiration_seconds": 3300,
+    "use_test_ads": true,
+    "ios_interstitial_id": "ca-app-pub-1234567890123456/1111111111",
+    "ios_rewarded_id": "ca-app-pub-1234567890123456/2222222222"
+  },
+  "game_center": {
+    "enabled": true,
+    "leaderboard_id": "spin_frenzy_high_score"
+  }
+}
+```
+
+Replace the sample ad unit IDs with your real IDs. The `game_center.leaderboard_id` must exactly match a leaderboard configured for the app in App Store Connect.
+
+After editing the JSON, commit and publish the changes. They are applied on the next successful startup download (subject to GitHub Pages/CDN caching). You do **not** need a new App Store build for these supported settings.
+
+### Suggested per-game files
+
+```text
+config/
+├── spin-frenzy.json
+├── fruit-wobble.json
+├── sealide.json
+└── hop-up.json
+```
+
+Each game's startup scene uses its own URL. The native AdMob App ID and Game Center entitlement remain build-specific.
+
+## 6. Remote JSON setting reference
+
+### `ads`
+
+| Key | Type | Description |
+|---|---|---|
+| `enabled` | boolean | Master switch for AdMob |
+| `enable_interstitial` | boolean | Allow interstitial loading and display |
+| `enable_rewarded` | boolean | Allow rewarded loading and display |
+| `game_overs_per_ad` | integer | Number of final game overs before attempting an interstitial; minimum 1 |
+| `minimum_seconds_between_ads` | number | Minimum seconds between successfully shown interstitials |
+| `retry_delay_seconds` | number | Delay before retrying failed loads |
+| `ad_expiration_seconds` | number | Age at which a cached ad is replaced |
+| `use_test_ads` | boolean | Select Google demo ad units when `true` |
+| `ios_interstitial_id` | string | Production interstitial unit ID when test mode is `false` |
+| `ios_rewarded_id` | string | Production rewarded unit ID when test mode is `false` |
+
+### `game_center`
+
+| Key | Type | Description |
+|---|---|---|
+| `enabled` | boolean | Whether your Game Center integration should operate |
+| `leaderboard_id` | string | Existing leaderboard identifier used for submissions and display |
+
+The current `RemoteConfig` loader checks that the response is a JSON object containing an `ads` object. It does **not** yet enforce every setting's type, allowed range, or leaderboard validity. Add schema validation before relying on untrusted remote values in production.
+
+## 7. Local defaults: `admob_config.gd`
+
+The manager reads remote settings through `RemoteConfig.get_ad_setting(key, fallback)`. `AdMobConfig` holds fallback values:
 
 ```gdscript
 class_name AdMobConfig
@@ -96,7 +186,6 @@ extends RefCounted
 
 const ENABLED: bool = true
 const USE_TEST_ADS: bool = true
-
 const ENABLE_INTERSTITIAL: bool = true
 const ENABLE_REWARDED: bool = true
 
@@ -105,440 +194,223 @@ const IOS_REWARDED_ID: String = ""
 
 const GAME_OVERS_PER_AD: int = 3
 const MINIMUM_SECONDS_BETWEEN_ADS: float = 60.0
-
 const RETRY_DELAY_SECONDS: float = 60.0
 const AD_EXPIRATION_SECONDS: float = 3300.0
 const CONSENT_RETRY_SECONDS: float = 60.0
 ```
 
-Change these constants separately for each game.
+Fallbacks apply when a **key is missing from an otherwise successfully loaded JSON**. They do **not** bypass the startup requirement: if downloading or parsing the JSON fails, the startup screen remains blocked.
 
-## 4. AdMob App ID and Ad Unit IDs
+## 8. AdMob App ID, ad units, and test mode
 
-In Google AdMob, create an iOS application and configure its App ID in your iOS export/plugin settings.
+An AdMob **App ID** (example `ca-app-pub-1234567890123456~1234567890`) is configured in the native iOS project/export. It cannot be changed using remote JSON.
 
-Example App ID:
+Ad **unit IDs** use `/`, for example `ca-app-pub-1234567890123456/1111111111`, and can be changed through the JSON.
 
-```text
-ca-app-pub-1234567890123456~1234567890
-```
+When `use_test_ads` is `true`, the manager selects Google's demonstration IDs regardless of the production IDs in JSON:
 
-Create separate ad units for interstitial and rewarded advertisements.
-
-Example configuration:
-
-```gdscript
-const IOS_INTERSTITIAL_ID: String = "ca-app-pub-1234567890123456/1111111111"
-const IOS_REWARDED_ID: String = "ca-app-pub-1234567890123456/2222222222"
-```
-
-The App ID uses `~`, while ad unit IDs use `/`.
-
-Do not confuse them.
-
-## 5. Test Ads and Production Ads
-
-### Development
-
-```gdscript
-const USE_TEST_ADS: bool = true
-```
-
-The manager uses Google's official demonstration ad units.
-
-| Ad Type | Test Ad Unit |
+| Format | Google demo unit ID |
 |---|---|
 | Interstitial | `ca-app-pub-3940256099942544/4411468910` |
 | Rewarded | `ca-app-pub-3940256099942544/1712485313` |
 
-### Production
+When `use_test_ads` is `false`, the manager selects `ios_interstitial_id` and `ios_rewarded_id` from the JSON.
+
+**Release warning:** The current manager permits `use_test_ads` to be changed remotely even in release builds. Keep this `false` for production monetization. A safer production implementation should lock test mode at build time and register development devices for test ads. TestFlight does not automatically determine which ad unit IDs the manager uses.
+
+## 9. Interstitial usage
+
+Call only after a run is **finally** over, not before the player has chosen whether to revive:
 
 ```gdscript
-const USE_TEST_ADS: bool = false
-```
-
-The manager uses the configured production ad unit IDs.
-
-TestFlight does not automatically change the configuration. You must choose the appropriate setting for each build.
-
-When testing your own production ad units, register your device as an AdMob test device to avoid invalid traffic.
-
-## 6. Interstitial Ads
-
-Interstitial ads are full-screen advertisements displayed between gameplay sessions.
-
-### Automatic game-over ads
-
-Call:
-
-```gdscript
-func _on_game_over() -> void:
+func finalize_game_over() -> void:
     AdMobManager.game_over()
 ```
 
-Configure the frequency:
+The remote `game_overs_per_ad` value controls the attempt threshold. The counter resets when the SDK reports a successful interstitial presentation, and is not persisted between app launches.
+
+Manual display:
 
 ```gdscript
-const GAME_OVERS_PER_AD: int = 3
+if AdMobManager.can_show_interstitial():
+    AdMobManager.show_interstitial()
 ```
 
-Example behavior:
+`show_interstitial()` returns whether a presentation was initiated, not confirmation that the ad was actually displayed.
 
-| Game Over | Result |
-|---|---|
-| 1 | No ad |
-| 2 | No ad |
-| 3 | Attempt interstitial |
-| After successful presentation | Counter resets |
+## 10. Rewarded usage
 
-If an ad is unavailable, the counter remains at its threshold so another eligible game-over event can attempt presentation.
-
-The counter is stored in memory and resets when the app restarts.
-
-### Manual interstitial
+Only show rewarded ads after the player chooses to watch one. Grant the reward **only** on `reward_earned`:
 
 ```gdscript
-func show_ad() -> void:
-    if AdMobManager.can_show_interstitial():
-        AdMobManager.show_interstitial()
-```
-
-`show_interstitial()` returns `true` when presentation is initiated, not when the SDK confirms the ad was displayed.
-
-### Minimum interval
-
-```gdscript
-const MINIMUM_SECONDS_BETWEEN_ADS: float = 60.0
-```
-
-Prevents another interstitial from being shown too soon after the previous successful presentation.
-
-### Games with revive functionality
-
-If your game offers a rewarded revive, do not call `game_over()` before the player makes their revive decision.
-
-Recommended flow:
-
-```text
-Player dies
-    ↓
-Show Game Over / Revive UI
-    ↓
-Player chooses revive?
-    ├── Yes → Request rewarded ad
-    │          ├── Reward earned → Revive player
-    │          └── No reward → Remain on Game Over
-    │
-    └── No → Finalize game over
-               ↓
-          AdMobManager.game_over()
-```
-
-This prevents an interstitial from interrupting a rewarded-ad opportunity.
-
-## 7. Rewarded Ads
-
-Rewarded ads should only be shown after the player voluntarily requests them.
-
-### Example: Revive player
-
-```gdscript
-extends Node
-
 func _ready() -> void:
-    AdMobManager.reward_earned.connect(
-        _on_reward_earned
-    )
-
+    AdMobManager.reward_earned.connect(_on_reward_earned)
 
 func _on_revive_pressed() -> void:
-    if not AdMobManager.can_show_rewarded():
-        print("Rewarded ad unavailable")
-        return
-
-    AdMobManager.show_rewarded()
-
+    if AdMobManager.can_show_rewarded():
+        AdMobManager.show_rewarded()
 
 func _on_reward_earned() -> void:
-    revive_player()
-
-
-func revive_player() -> void:
-    print("Player revived!")
+    revive_player()  # Implement in your gameplay script
 ```
 
-The manager emits `reward_earned` when the SDK confirms the reward.
+If `enable_rewarded` is `false`, `can_show_rewarded()` returns `false` and the manager does not load rewarded ads.
 
-Do not grant rewards simply because the advertisement opened or closed.
+## 11. Game Center leaderboard integration
 
-### Example: Bonus coins
+`RemoteConfig` can expose these convenience getters. Add them to `remote_config.gd` if they are not already present:
 
 ```gdscript
-var pending_reward: String = ""
+func is_game_center_enabled() -> bool:
+    return bool(get_setting("game_center", "enabled", false))
 
+func get_leaderboard_id() -> String:
+    return str(get_setting("game_center", "leaderboard_id", "")).strip_edges()
+```
 
-func _ready() -> void:
-    AdMobManager.reward_earned.connect(
-        _on_reward_earned
-    )
+In your **existing** `game_center_manager.gd`, replace any hardcoded leaderboard identifier used for score submission and display with:
 
+```gdscript
+var leaderboard_id: String = RemoteConfig.get_leaderboard_id()
+```
 
-func _on_double_coins_pressed() -> void:
-    if not AdMobManager.can_show_rewarded():
+Example of a guard around your existing Game Center submission API:
+
+```gdscript
+func submit_score(score: int) -> void:
+    if not RemoteConfig.is_loaded:
+        return
+    if not RemoteConfig.is_game_center_enabled():
         return
 
-    pending_reward = "double_coins"
+    var leaderboard_id := RemoteConfig.get_leaderboard_id()
+    if leaderboard_id.is_empty():
+        push_warning("Game Center leaderboard ID is missing")
+        return
 
-    if not AdMobManager.show_rewarded():
-        pending_reward = ""
-
-
-func _on_reward_earned() -> void:
-    if pending_reward == "double_coins":
-        give_bonus_coins()
-
-    pending_reward = ""
+    # Call your installed Game Center plugin's actual submit API
+    # with leaderboard_id and score here.
 ```
 
-For multiple reward types, keep the selected reward in your gameplay system rather than the AdMob manager.
+**Integration status:** This is a configuration contract and usage example, **not** a full Game Center plugin implementation. Your Game Center manager must explicitly consume these getters and wait for remote config. Changing JSON cannot create a leaderboard, move historical scores, add native entitlements, or install a plugin. Leaderboards must already exist in App Store Connect for the app.
 
-For production, associate each rewarded request with the current run or reward transaction to prevent stale rewards from being applied to another run.
+## 12. RemoteConfig API
 
-## 8. Available Methods
-
-| Method | Description |
+| Member | Purpose |
 |---|---|
-| `game_over()` | Counts game overs and attempts an interstitial |
-| `show_interstitial()` | Attempts to show an interstitial |
-| `can_show_interstitial()` | Checks interstitial eligibility |
-| `show_rewarded()` | Attempts to show a rewarded ad |
-| `can_show_rewarded()` | Checks rewarded ad eligibility |
-| `privacy_options_required()` | Checks whether privacy options are required |
-| `show_privacy_options()` | Opens the privacy options form |
-| `diagnostics()` | Returns AdMob status information |
+| `load_config(url: String)` | Download configuration from the startup scene's URL |
+| `config_loaded` | Signal emitted after valid JSON is accepted |
+| `config_failed(message: String)` | Signal emitted on network/server/JSON failure |
+| `is_loaded` | Whether valid config is available |
+| `is_loading` | Whether a request is in progress |
+| `error_message` | Latest failure reason |
+| `current_url` | URL used for the request |
+| `get_setting(section, key, default)` | Read a setting from any section |
+| `get_ad_setting(key, default)` | Read from the `ads` section |
+| `is_game_center_enabled()` | Optional helper; add as shown above |
+| `get_leaderboard_id()` | Optional helper; add as shown above |
 
-## 9. Signals
+Example:
 
-| Signal | Description |
+```gdscript
+var frequency: int = int(RemoteConfig.get_ad_setting(
+    "game_overs_per_ad", AdMobConfig.GAME_OVERS_PER_AD
+))
+```
+
+## 13. AdMobManager API and signals
+
+| Method | Purpose |
 |---|---|
-| `status_changed` | AdMob status changed |
-| `presentation_changed` | Full-screen presentation state changed |
-| `interstitial_loaded` | Interstitial loaded successfully |
-| `rewarded_loaded` | Rewarded ad loaded successfully |
-| `interstitial_closed` | Interstitial presentation finished |
-| `rewarded_closed` | Rewarded presentation finished |
-| `reward_earned` | Reward confirmed by SDK |
-| `ad_failed(ad_type, message)` | Ad loading, consent, or presentation error |
+| `game_over()` | Increment game-over counter and attempt interstitial at threshold |
+| `can_show_interstitial()` | Check interstitial eligibility |
+| `show_interstitial()` | Attempt to present interstitial |
+| `can_show_rewarded()` | Check rewarded eligibility |
+| `show_rewarded()` | Attempt to present rewarded ad |
+| `privacy_options_required()` | Check UMP privacy options requirement |
+| `show_privacy_options()` | Display UMP privacy options form |
+| `diagnostics()` | Return status information |
 
-### Example: Update a revive button
+Signals: `status_changed`, `presentation_changed`, `interstitial_loaded`, `rewarded_loaded`, `interstitial_closed`, `rewarded_closed`, `reward_earned`, and `ad_failed(ad_type, message)`.
+
+Example:
 
 ```gdscript
 func _ready() -> void:
-    AdMobManager.rewarded_loaded.connect(
-        _update_revive_button
-    )
-
-    AdMobManager.rewarded_closed.connect(
-        _update_revive_button
-    )
-
-    AdMobManager.presentation_changed.connect(
-        _update_revive_button
-    )
-
+    AdMobManager.rewarded_loaded.connect(_update_revive_button)
+    AdMobManager.rewarded_closed.connect(_update_revive_button)
+    AdMobManager.presentation_changed.connect(_update_revive_button)
     _update_revive_button()
 
-
 func _update_revive_button() -> void:
-    $ReviveButton.disabled = not (
-        AdMobManager.can_show_rewarded()
-    )
+    $ReviveButton.disabled = not AdMobManager.can_show_rewarded()
 ```
 
-### Example: Display ad status
+## 14. Consent, privacy, loading, and diagnostics
+
+The AdMob manager waits for remote configuration, then requests Google UMP consent information, presents a form when required, initializes the Mobile Ads SDK, and loads enabled ads. Configure your consent messages in **AdMob → Privacy & messaging**.
 
 ```gdscript
-func _ready() -> void:
-    AdMobManager.status_changed.connect(
-        _update_status
-    )
-
-    _update_status()
-
-
-func _update_status() -> void:
-    $StatusLabel.text = AdMobManager.status_text
-```
-
-## 10. Consent and Privacy
-
-The manager uses Google User Messaging Platform (UMP) to handle consent.
-
-During initialization, it:
-
-1. Requests updated consent information.
-2. Loads a consent form when required.
-3. Displays the form to the user.
-4. Checks whether consent permits ad requests.
-5. Initializes the Mobile Ads SDK.
-6. Loads enabled advertisements.
-
-Consent forms must be configured in your AdMob account.
-
-Open **AdMob → Privacy & messaging** and configure the applicable consent messages.
-
-### Privacy options
-
-Check whether privacy options are required:
-
-```gdscript
-func _ready() -> void:
-    $PrivacyButton.visible = (
-        AdMobManager.privacy_options_required()
-    )
-```
-
-Because consent information updates asynchronously, refresh this visibility after consent initialization rather than relying solely on `_ready()`.
-
-To open privacy options:
-
-```gdscript
-func _on_privacy_pressed() -> void:
+if AdMobManager.privacy_options_required():
     AdMobManager.show_privacy_options()
-```
 
-The manager must not bypass required consent.
-
-The supplied implementation uses `get_consent_status()` to determine whether requests are allowed. Confirm that this matches the consent behavior required by your installed plugin and Google UMP version.
-
-## 11. Diagnostics and Debugging
-
-Display diagnostics:
-
-```gdscript
 print(AdMobManager.diagnostics())
 ```
 
-Or:
+Ads are automatically reloaded after use. Failed loads are retried after the configured delay; cached ads are replaced after the configured expiration. Consent and native ad callbacks should be verified against the installed Poing Studios 5.1.0 plugin on a physical iOS device.
 
-```gdscript
-$DiagnosticsLabel.text = AdMobManager.diagnostics()
-```
+## 15. Troubleshooting
 
-Example output:
-
-```text
-AdMob diagnostics
-Test ads: true
-Interstitial ready: true
-Rewarded ready: false
-Game overs: 2 / 3
-Status: Interstitial ready
-Last error: None
-```
-
-This is useful when debugging TestFlight builds without direct access to Xcode.
-
-### Common errors
-
-| Error | Possible Cause |
+| Symptom | Check |
 |---|---|
-| Account is not approved yet | AdMob account approval incomplete |
-| No forms configured | Missing or unpublished UMP consent message |
-| No fill | No eligible advertising inventory |
-| Invalid ad unit | Incorrect App ID or ad unit ID |
-| Plugin missing | Native iOS plugin not included |
-| Ads always show demo creatives | Test ads enabled or device registered for testing |
+| No internet connection | Device connection, DNS, TLS, request timeout, and GitHub Pages reachability |
+| Configuration server unavailable | URL path, GitHub Pages publishing, HTTP response code |
+| Invalid game configuration | JSON syntax and top-level object |
+| Missing ads configuration | JSON contains an `ads` object |
+| Game does not open | `next_scene` is set and the JSON request succeeded |
+| AdMob does not initialize | Remote config loaded, `ads.enabled`, iOS platform, native plugin, UMP consent |
+| Rewarded unavailable | `enable_rewarded`, ad unit, SDK readiness, ad fill |
+| Demo ads appear | Remote `use_test_ads` and registered test devices |
+| Leaderboard not submitting | Remote Game Center enabled, correct ID, authentication, entitlement, and actual manager integration |
+| AdMob account not approved | AdMob account/app approval status |
 
-Ad failures should not prevent normal gameplay.
+## 16. Release checklist
 
-## 12. Automatic Loading and Expiration
+- [ ] GitHub Pages JSON URL opens publicly over HTTPS.
+- [ ] Startup screen has correct Game Title, Next Scene, and Remote Config URL.
+- [ ] Startup handles success, offline/network errors, HTTP errors, invalid JSON, and Retry.
+- [ ] `RemoteConfig` Autoload precedes `AdMobManager`.
+- [ ] AdMob waits for remote config and consent before loading ads.
+- [ ] Production AdMob App ID is embedded in the iOS build.
+- [ ] JSON contains the correct production ad unit IDs.
+- [ ] `use_test_ads` is `false` for production monetization.
+- [ ] Remote ad settings are validated and tested on a physical device.
+- [ ] UMP consent messages and privacy options work.
+- [ ] Rewarded ads only grant rewards after reward confirmation.
+- [ ] Interstitials do not interrupt revive decisions.
+- [ ] Game Center entitlement and plugin are present if needed.
+- [ ] Leaderboard exists in App Store Connect and its ID matches JSON.
+- [ ] Game Center manager actually reads remote settings for submission and display.
+- [ ] App behavior complies with App Store review and applicable privacy requirements.
 
-Ads are loaded automatically after SDK initialization.
+## 17. Known limitations and next improvements
 
-After an ad is consumed, the manager attempts to load a replacement.
-
-Failed loads use:
-
-```gdscript
-const RETRY_DELAY_SECONDS: float = 60.0
-```
-
-Cached ads expire after:
-
-```gdscript
-const AD_EXPIRATION_SECONDS: float = 3300.0
-```
-
-This represents 55 minutes.
-
-Expired advertisements are destroyed and replaced.
-
-The manager also uses generation checks to reject outdated loading callbacks after privacy-related invalidation.
-
-## 13. Reusing Across Games
-
-Copy the same two scripts into each Godot project.
-
-Only modify `admob_config.gd`.
-
-Example configurations:
-
-| Game | Interstitial | Rewarded | Game Overs per Ad |
-|---|---|---|---|
-| Spin Frenzy | Enabled | Revive | 3 |
-| Fruit Wobble | Enabled | Continue | 3 |
-| Sealide | Enabled | Revive | 4 |
-| Hop Up | Enabled | Revive | 4 |
-
-Each game must use its own AdMob App ID and appropriate ad unit IDs.
-
-Game Center leaderboard IDs and other game-specific services are configured separately.
-
-## 14. Release Checklist
-
-Before submitting to TestFlight or the App Store:
-
-- [ ] AdMob plugin installed correctly
-- [ ] Native iOS plugin enabled in export
-- [ ] Correct AdMob App ID
-- [ ] Correct interstitial and rewarded unit IDs
-- [ ] `USE_TEST_ADS` configured for the intended build
-- [ ] Consent messages configured
-- [ ] Privacy options tested
-- [ ] AdMob account and app readiness checked
-- [ ] `app-ads.txt` status reviewed
-- [ ] Rewarded ads grant rewards only after SDK confirmation
-- [ ] Game-over ads do not interrupt revive flows
-- [ ] Ad loading failures do not block gameplay
-- [ ] Native ad lifecycle tested on a physical device
-- [ ] TestFlight diagnostics checked
-- [ ] Production builds do not request Google's demo ad units
-
-## 15. Implementation Notes
-
-The current manager is a reusable starting implementation. Before using it in multiple production games, validate the following with Poing Studios 5.1.0:
-
-- Native ad loader cleanup and reference release
-- Callback ordering when rewarded ads close
-- Consent eligibility after UMP updates
-- Ad-loading behavior while another full-screen presentation is active
-- Recovery after privacy changes
-- Retry behavior when the application is backgrounded
-- Repeated ad loading and destruction without native resource leaks
-
-The current manager's game-over counter is not persistent. Use a game-specific save system if persistence is required.
+- **Online-only startup:** A GitHub Pages outage can block play. There is no last-known-good offline cache.
+- **Basic JSON validation:** The current loader validates the top-level dictionary and `ads` object, but not every field type or value range.
+- **Remote test-mode safety:** Production builds currently accept remote `use_test_ads`; consider locking it off for releases.
+- **Game Center integration:** Requires updating your existing manager; JSON getters alone do not submit scores.
+- **Native lifecycle:** Validate AdMob loader cleanup, UMP callback behavior, reward ordering, retry behavior, and background/foreground transitions with Poing Studios 5.1.0.
+- **No live push:** JSON changes are applied at the next successful configuration download, normally app startup. GitHub Pages caching may delay propagation.
 
 ## References
 
-- Poing Studios Godot AdMob Plugin: https://github.com/poing-studios/godot-admob-plugin
-- Google AdMob: https://admob.google.com/
-- Google Mobile Ads SDK for iOS: https://developers.google.com/admob/ios/quick-start
-- Google UMP: https://developers.google.com/admob/ios/privacy
-- Google Test Ads: https://developers.google.com/admob/ios/test-ads
+- [Poing Studios Godot AdMob Plugin](https://github.com/poing-studios/godot-admob-plugin)
+- [Google AdMob](https://admob.google.com/)
+- [Google Mobile Ads SDK for iOS](https://developers.google.com/admob/ios/quick-start)
+- [Google UMP](https://developers.google.com/admob/ios/privacy)
+- [Google Test Ads](https://developers.google.com/admob/ios/test-ads)
 
 ---
 
-**Target:** Godot 4.6.x / iOS / Poing Studios AdMob Plugin 5.1.0
-
-**Architecture:** One reusable AdMob manager, one per-game configuration script, no `.tres` dependency.
+**Target:** Godot 4.6.x · iOS · Poing Studios AdMob Plugin 5.1.0  
+**Architecture:** RemoteConfig + reusable StartupScreen + AdMobManager + separate Game Center manager; one JSON per game; no `.tres` file.

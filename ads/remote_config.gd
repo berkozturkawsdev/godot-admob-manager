@@ -138,3 +138,23 @@ func get_ad_setting(
 		key,
 		default_value
 	)
+
+
+# ============================================================
+# GAME CENTER CONFIGURATION
+# ============================================================
+
+func is_game_center_enabled() -> bool:
+	return bool(get_setting(
+		"game_center",
+		"enabled",
+		false
+	))
+
+
+func get_leaderboard_id() -> String:
+	return str(get_setting(
+		"game_center",
+		"leaderboard_id",
+		""
+	)).strip_edges()
