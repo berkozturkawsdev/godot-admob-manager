@@ -7,6 +7,8 @@ extends Control
 ## Leave empty to use application/config/name.
 @export var game_title: String = ""
 @export_file("*.tscn") var next_scene: String = ""
+## Show live diagnostics until Continue is pressed.
+@export var admin_mode: bool = false
 
 @export_group("Branding")
 ## Full game logo (ideally transparent). Falls back to the project icon.
@@ -34,6 +36,7 @@ var _bar_material: ShaderMaterial
 var _progress_tween: Tween
 var _remote_config: Node
 var _started: bool = false
+var _diagnostics_view: Control
 
 
 func _ready() -> void:
@@ -249,6 +252,12 @@ func _on_config_loaded() -> void:
 
 
 func _open_game() -> void:
+	if admin_mode or _remote_config.get_ad_setting("admin_mode", false) == true:
+		if not is_instance_valid(_diagnostics_view):
+			_diagnostics_view = load("res://ads/diagnostics_screen.tscn").instantiate()
+			_diagnostics_view.next_scene = next_scene
+			add_child(_diagnostics_view)
+		return
 	var error := get_tree().change_scene_to_file(next_scene)
 	if error != OK:
 		_on_config_failed("Could not open the game scene. Check Next Scene.")

@@ -348,6 +348,14 @@ func _update_revive_button() -> void:
 
 ## 14. Consent, privacy, loading, and diagnostics
 
+### Admin startup view
+
+Enable **Admin Mode** on the StartupScreen in the Inspector, or set `"admin_mode": true` inside the remote JSON `ads` object. Both default to off; either one enables the view. After configuration loads, startup opens `ads/diagnostics_screen.tscn` over the startup screen and waits for **Continue to game** before opening **Next Scene**. Consent, SDK initialization, ad loading, and retries keep running while you inspect diagnostics.
+
+The scrollable, selectable report updates live with test mode, selected ad unit IDs, configured production IDs, platform/plugin availability, consent/SDK state, ad readiness, and the latest 300 timestamped manager log entries. Load requests log the actual unit ID used. Errors retain their code/message and all script fields exposed by the plugin, including nested response/adapter details when available. **Copy diagnostics** copies the report. These are session AdMob manager logs, not the full Godot console or native device log. Native errors must be tested on an iOS device with the plugin installed.
+
+Disable both admin settings to restore automatic entry to the game. Configuration failures still show the startup error and Retry button.
+
 The AdMob manager waits for remote configuration, then requests Google UMP consent information, presents a form when required, initializes the Mobile Ads SDK, and loads enabled ads. Configure your consent messages in **AdMob → Privacy & messaging**.
 
 ```gdscript

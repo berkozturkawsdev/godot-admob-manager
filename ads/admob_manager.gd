@@ -36,6 +36,8 @@ const TEST_REWARDED: String = \
 
 var status_text: String = "Waiting for remote configuration"
 var last_error: String = ""
+const MAX_DIAGNOSTIC_ENTRIES: int = 300
+var diagnostic_logs: PackedStringArray = []
 
 var presenting: bool = false
 
@@ -219,14 +221,44 @@ func _on_remote_config_loaded() -> void:
 
 func _set_status(message: String) -> void:
 	status_text = message
+	diagnostic_logs.append("[%s] %s" % [Time.get_time_string_from_system(), message])
+	if diagnostic_logs.size() > MAX_DIAGNOSTIC_ENTRIES:
+		diagnostic_logs.remove_at(0)
 	print("[AdMob] ", message)
 	status_changed.emit()
 
 
-func _set_error(ad_type: String, message: String) -> void:
+func _set_error(ad_type: String, message: String, sdk_error: Object = null) -> void:
+	if sdk_error != null:
+		message += "\nSDK details: " + JSON.stringify(_diagnostic_value(sdk_error), "  ")
+	message = "ERROR [%s] %s" % [ad_type, message]
 	last_error = message
 	_set_status(message)
 	ad_failed.emit(ad_type, message)
+
+
+func _diagnostic_value(value: Variant, depth: int = 0) -> Variant:
+	if depth >= 8:
+		return str(value)
+	if value is Object:
+		if not is_instance_valid(value):
+			return null
+		var details: Dictionary = {}
+		for property in value.get_property_list():
+			if int(property.usage) & PROPERTY_USAGE_SCRIPT_VARIABLE:
+				details[str(property.name)] = _diagnostic_value(value.get(property.name), depth + 1)
+		return details if not details.is_empty() else str(value)
+	if value is Dictionary:
+		var details: Dictionary = {}
+		for key in value:
+			details[str(key)] = _diagnostic_value(value[key], depth + 1)
+		return details
+	if value is Array:
+		var details: Array = []
+		for item in value:
+			details.append(_diagnostic_value(item, depth + 1))
+		return details
+	return value
 
 
 # ============================================================
@@ -345,7 +377,8 @@ func _consent_failed(error: FormError) -> void:
 			"Consent %d: %s" % [
 				error.error_code,
 				error.message
-			]
+			],
+			error
 		)
 
 	if _can_request_ads():
@@ -515,7 +548,7 @@ func _load_interstitial() -> void:
 
 	var generation := _generation
 
-	_set_status("Loading interstitial")
+	_set_status("Loading interstitial with unit: " + unit)
 
 	var callback := InterstitialAdLoadCallback.new()
 
@@ -549,7 +582,8 @@ func _load_interstitial() -> void:
 			"Interstitial load %d: %s" % [
 				error.code,
 				error.message
-			]
+			],
+			error
 		)
 
 		_schedule_retry("interstitial")
@@ -616,7 +650,8 @@ func show_interstitial() -> bool:
 			"Interstitial show %d: %s" % [
 				error.code,
 				error.message
-			]
+			],
+			error
 		)
 
 		_finish_interstitial()
@@ -743,7 +778,8 @@ func _load_rewarded() -> void:
 			"Rewarded load %d: %s" % [
 				error.code,
 				error.message
-			]
+			],
+			error
 		)
 
 		_schedule_retry("rewarded")
@@ -794,7 +830,8 @@ func show_rewarded() -> bool:
 			"Rewarded show %d: %s" % [
 				error.code,
 				error.message
-			]
+			],
+			error
 		)
 
 		_finish_rewarded()
@@ -932,6 +969,15 @@ func _process(_delta: float) -> void:
 func diagnostics() -> String:
 	return (
 		"AdMob diagnostics\n"
+		+ "Platform: %s\n" % OS.get_name()
+		+ "Native plugin available: %s\n" % Engine.has_singleton("PoingGodotAdMob")
+		+ "SDK initialized: %s (initializing: %s)\n" % [_initialized, _initializing]
+		+ "Consent updating: %s / Can request ads: %s\n" % [_consent_updating, _can_request_ads()]
+		+ "Selected interstitial ID: %s\n" % _ad_unit("interstitial")
+		+ "Selected rewarded ID: %s\n" % _ad_unit("rewarded")
+		+ "Configured production interstitial ID: %s\n" % _ios_interstitial_id()
+		+ "Configured production rewarded ID: %s\n" % _ios_rewarded_id()
+		+ "Loading interstitial: %s / rewarded: %s\n" % [_interstitial_loading, _rewarded_loading]
 		+ "Remote config loaded: %s\n" % RemoteConfig.is_loaded
 		+ "Ads enabled: %s\n" % _ad_enabled()
 		+ "Test ads: %s\n" % _use_test_ads()
