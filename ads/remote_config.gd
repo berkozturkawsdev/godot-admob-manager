@@ -1,43 +1,63 @@
+
 extends Node
 
 signal config_loaded
 signal config_failed(message: String)
 
-const CONFIG_URL: String = "https://bozapps.com/config/spin-frenzy.json"
 const TIMEOUT_SECONDS: float = 10.0
 
 var config: Dictionary = {}
 var is_loaded: bool = false
 var is_loading: bool = false
 var error_message: String = ""
+var current_url: String = ""
 
 var _request: HTTPRequest
 
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
-	load_config()
+
+	_request = HTTPRequest.new()
+	_request.timeout = TIMEOUT_SECONDS
+	add_child(_request)
+
+	_request.request_completed.connect(
+		_on_request_completed
+	)
 
 
-func load_config() -> void:
+# ============================================================
+# LOAD CONFIGURATION
+# ============================================================
+
+func load_config(url: String) -> void:
 	if is_loading:
 		return
 
+	if url.strip_edges().is_empty():
+		_fail("Remote configuration URL is missing")
+		return
+
+	if not url.begins_with("https://"):
+		_fail("Remote configuration must use HTTPS")
+		return
+
+	current_url = url
 	is_loading = true
 	is_loaded = false
 	error_message = ""
+	config.clear()
 
-	if _request == null:
-		_request = HTTPRequest.new()
-		_request.timeout = TIMEOUT_SECONDS
-		add_child(_request)
-		_request.request_completed.connect(_on_request_completed)
-
-	var error: Error = _request.request(CONFIG_URL)
+	var error := _request.request(current_url)
 
 	if error != OK:
 		_fail("No internet connection")
 
+
+# ============================================================
+# REQUEST COMPLETED
+# ============================================================
 
 func _on_request_completed(
 	result: int,
@@ -61,11 +81,13 @@ func _on_request_completed(
 		_fail("Invalid game configuration")
 		return
 
-	if not parsed.has("ads"):
-		_fail("Missing game configuration")
+	var data: Dictionary = parsed
+
+	if not data.has("ads") or not data["ads"] is Dictionary:
+		_fail("Missing ads configuration")
 		return
 
-	config = parsed
+	config = data
 	is_loading = false
 	is_loaded = true
 	error_message = ""
@@ -73,14 +95,23 @@ func _on_request_completed(
 	config_loaded.emit()
 
 
+# ============================================================
+# FAILURE
+# ============================================================
+
 func _fail(message: String) -> void:
 	is_loading = false
 	is_loaded = false
 	error_message = message
 
 	push_warning("[RemoteConfig] " + message)
+
 	config_failed.emit(message)
 
+
+# ============================================================
+# GET SETTINGS
+# ============================================================
 
 func get_setting(
 	section: String,
@@ -102,4 +133,8 @@ func get_ad_setting(
 	key: String,
 	default_value: Variant
 ) -> Variant:
-	return get_setting("ads", key, default_value)
+	return get_setting(
+		"ads",
+		key,
+		default_value
+	)
